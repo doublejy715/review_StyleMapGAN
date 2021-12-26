@@ -240,9 +240,7 @@ class DDPModel(nn.Module):
 
 def run(ddp_fn, world_size, args):
     print("world size", world_size)
-    # https://discuss.pytorch.org/t/return-from-mp-spawn/94302 사용법 참조
-    # nprocs : 몇개의 sub process를 만들 것인지 / 보통 gpus의 개수로 설정한다.
-    # args : fn에 넣어줄 매개변수를 넣어준다. Q. 3개여야 되는게 아닐까? rank(첫 인자)는 자동 숫자인듯.
+
     mp.spawn(ddp_fn, args=(world_size, args), nprocs=world_size, join=True) 
 
 
@@ -253,9 +251,12 @@ def ddp_main(rank, world_size, args):
     torch.cuda.set_device(map_location)
 
     
-    if args.ckpt:  # ignore current arguments
-        # load model in {ckpt} path
-        # set iter number and load train_args options
+    if args.ckpt: 
+        """
+        load .pt file
+        args를 load한 .pt에 맞게 새롭게 대입한다.
+        args.ckpt로 load 여부를 확인한다.
+        """
         ckpt = torch.load(args.ckpt, map_location=map_location)
         train_args = ckpt["train_args"]
         print("load model:", args.ckpt)
@@ -269,7 +270,7 @@ def ddp_main(rank, world_size, args):
 
     # create model and move it to GPU with id rank
     model = DDPModel(device=map_location, args=args).to(map_location)
-    model = DDP(model, device_ids=[rank], find_unused_parameters=True) # parallel
+    model = DDP(model, device_ids=[rank], find_unused_parameters=True) # DDP를 가지고 병렬 학습을 가능하게 한다.
     model.train()
 
     # define generator
@@ -284,26 +285,26 @@ def ddp_main(rank, world_size, args):
     e_ema_module.eval()
     accumulate(e_ema_module, e_module, 0)
 
-    # d_reg의 의미
+    # d_reg의 의미 ??
     # 16/17
     d_reg_ratio = args.d_reg_every / (args.d_reg_every + 1)
 
     # define Optimizer
-        # generator
+    ## generator Optimizer
     g_optim = optim.Adam(
         g_module.parameters(),
         lr=args.lr,
         betas=(0, 0.99),
     )
 
-        # discriminator
+    ## discriminator Optimizer
     d_optim = optim.Adam(
         model.module.discriminator.parameters(),
         lr=args.lr * d_reg_ratio,
         betas=(0 ** d_reg_ratio, 0.99 ** d_reg_ratio),
     )
 
-        # encoder
+    ## encoder Optimizer
     e_optim = optim.Adam(
         e_module.parameters(),
         lr=args.lr,
@@ -312,7 +313,7 @@ def ddp_main(rank, world_size, args):
 
     accum = 0.999
 
-    # 이어서 학습시키고 싶은 경우 parameter들을 load한다.
+    # 이어서 학습하기 위해서 model's parameter들 load한다.
     if args.ckpt:
         model.module.generator.load_state_dict(ckpt["generator"])
         model.module.discriminator.load_state_dict(ckpt["discriminator"])
@@ -341,20 +342,13 @@ def ddp_main(rank, world_size, args):
     os.makedirs(save_dir + "/checkpoints", 0o777, exist_ok=True)
 
     # load train & val 's lmdb data file
+    # lmdb에 size별로 저장되어 있음. args.size를 통해서 해당 해상도 이미지를 transform 적용하여 가져옴
     train_dataset = MultiResolutionDataset(args.train_lmdb, transform, args.size)
     val_dataset = MultiResolutionDataset(args.val_lmdb, transform, args.size)
 
     print(f"train_dataset: {len(train_dataset)}, val_dataset: {len(val_dataset)}")
 
-    # DistributedSampler
-    # Sampler : 전체 데이터를 GPU의 개수로 나눈다. 나눠진 부분 데이터에서만 DataLoader에서 데이터를 샘플링
-        # 1. 부분 데이터를 만들기 위해 전체 데이터셋 인덱스 리스트를 무작위로 섞는다.
-        # 2. 인덱스 리스트를 GPU개수만큼 쪼개서 각 GPU sampler에 할당한다.
-        # 3. epoch 마다 새롭게 GPU smapler에 무작위로 할당된다.
-    # instance
-        # val_dataset : dataset
-        # num_replicas : ngpus
-        # rank : index gpu
+    # 분산처리를 하기 위해서 dataset을 gpu개수만큼 묶음으로 나눈다.
     val_sampler = torch.utils.data.distributed.DistributedSampler(
         val_dataset, num_replicas=world_size, rank=rank, shuffle=True
     )
@@ -399,6 +393,7 @@ def ddp_main(rank, world_size, args):
     gpu_group = dist.new_group(list(range(args.ngpus)))
 
     for i in pbar:
+        # iter & epoch check
         if i > args.iter:
             print("Done!")
             break
@@ -417,7 +412,6 @@ def ddp_main(rank, world_size, args):
             # stylecode : input fake image to encoder and get output value(=stylecode)
         adv_loss, w_rec_loss, stylecode = model(None, "G")
         adv_loss = adv_loss.mean()
-
 
         with torch.no_grad():
             latent_std = stylecode.std().mean().item()
@@ -559,6 +553,7 @@ def ddp_main(rank, world_size, args):
                         f"step={i}, epoch={epoch}, x_rec_loss_avg_val={x_rec_loss_avg_val}, perceptual_loss_avg_val={perceptual_loss_avg_val}, d_loss_val={d_loss_val}, indomainGAN_D_loss_val={indomainGAN_D_loss_val}, indomainGAN_E_loss_val={indomainGAN_E_loss_val}, x_rec_loss_val={x_rec_loss_val}, perceptual_loss_val={perceptual_loss_val}, g_loss_val={g_loss_val}, adv_loss_val={adv_loss_val}, w_rec_loss_val={w_rec_loss_val}, r1_val={r1_val}, real_score_val={real_score_val}, fake_score_val={fake_score_val}, latent_std={latent_std}, latent_channel_std={latent_channel_std}, latent_spatial_std={latent_spatial_std}"
                     )
 
+                    # save argument and model's parameter to .pt file
                     torch.save(
                         {
                             "generator": model.module.generator.state_dict(),

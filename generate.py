@@ -192,7 +192,7 @@ class Model(nn.Module):
 
 if __name__ == "__main__":
     device = "cuda"
-
+    # parser
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
@@ -233,19 +233,26 @@ if __name__ == "__main__":
         ],
     )
 
+    # th. local_editing version을 써야할것 같음
     args = parser.parse_args()
-
+    # load .pt file
     ckpt = torch.load(args.ckpt)
     train_args = ckpt["train_args"]
 
-    # 새로운 속성 부여
+    # train 할 때 사용하였던 arg 셋팅들을 대입한다.
     for key in vars(train_args):
         if not (key in vars(args)):
             setattr(args, key, getattr(train_args, key))
+            """
+            setattr : object 내부 변수의 값을 바꿀 수 있다.
+            args : object / key : 변수 명 / getattr~ : 바꿀 값
+            """
 
     print(args)
 
     dataset_name = args.dataset
+    # save 할 곳의 dir 지정
+        # root_dir/mixing_type/dataset_name 으로 파일 경로 설정
     args.save_image_dir = os.path.join(
         args.save_image_dir, args.mixing_type, dataset_name
     )
