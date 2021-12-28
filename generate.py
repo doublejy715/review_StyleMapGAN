@@ -155,7 +155,7 @@ class Model(nn.Module):
             recon_img_ref, _ = self.g_ema(w2, input_is_stylecode=True)
 
             return mixed_image, recon_img_src, recon_img_ref
-
+        # A에 존재하는 물체를 B에 자연스럽게 삽입한다.
         elif mode == "transplantation":
             src_img, ref_img, coordinates = input
 
@@ -192,7 +192,7 @@ class Model(nn.Module):
 
 if __name__ == "__main__":
     device = "cuda"
-    # parser
+
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
@@ -233,30 +233,23 @@ if __name__ == "__main__":
         ],
     )
 
-    # th. local_editing version을 써야할것 같음
     args = parser.parse_args()
-    # load .pt file
+
     ckpt = torch.load(args.ckpt)
     train_args = ckpt["train_args"]
 
-    # train 할 때 사용하였던 arg 셋팅들을 대입한다.
+    # train 했던 arg set으로 수정
     for key in vars(train_args):
         if not (key in vars(args)):
             setattr(args, key, getattr(train_args, key))
-            """
-            setattr : object 내부 변수의 값을 바꿀 수 있다.
-            args : object / key : 변수 명 / getattr~ : 바꿀 값
-            """
 
     print(args)
-
+    # 저장 경로 지정
     dataset_name = args.dataset
-    # save 할 곳의 dir 지정
-        # root_dir/mixing_type/dataset_name 으로 파일 경로 설정
     args.save_image_dir = os.path.join(
         args.save_image_dir, args.mixing_type, dataset_name
     )
-
+    # Model 선언
     model = Model().to(device)
     model.g_ema.load_state_dict(ckpt["g_ema"])
     model.e_ema.load_state_dict(ckpt["e_ema"])
@@ -272,6 +265,7 @@ if __name__ == "__main__":
         ]
     )
 
+    # 데이터셋 세팅
     if args.mixing_type == "random_generation":
         os.makedirs(args.save_image_dir, exist_ok=True)
     elif args.mixing_type in [
@@ -282,8 +276,9 @@ if __name__ == "__main__":
     ]:
         os.makedirs(args.save_image_dir, exist_ok=True)
         dataset = MultiResolutionDataset(args.test_lmdb, transform, args.size)
+    
+    # local_editing 시 segmentation mask가 있으면 lmdb 형태로 가져온다.
     elif args.mixing_type == "local_editing":
-
         if dataset_name == "afhq":
             args.save_image_dir = os.path.join(args.save_image_dir)
             for kind in [
@@ -364,6 +359,7 @@ if __name__ == "__main__":
         total_latents = torch.Tensor().to(device)
         real_imgs = torch.Tensor().to(device)
 
+        # local editing을 하는 경우 mask 생성
         if args.mixing_type == "local_editing":
             if dataset_name == "afhq":
                 masks = (
@@ -380,17 +376,22 @@ if __name__ == "__main__":
             else:
                 masks = torch.Tensor().to(device).long()
 
+
     with torch.no_grad():
+        # case 1. random_generation
         if args.mixing_type == "random_generation":
             truncation = 0.7
             truncation_sample = 5000
             truncation_mean_latent = torch.Tensor().to(device)
+
+            # noise vectors z 로부터 stylecode를 만들어 낸다.
             for _ in range(truncation_sample // batch):
                 z = make_noise(batch, args.latent_channel_size, device)
                 partial_mean_latent = model(z, mode="calculate_mean_stylemap")
                 truncation_mean_latent = torch.cat(
                     [truncation_mean_latent, partial_mean_latent], dim=0
                 )
+
             truncation_mean_latent = truncation_mean_latent.mean(0, keepdim=True)
 
             # refer to stylegan official repository: https://github.com/NVlabs/stylegan/blob/master/generate_figures.py
@@ -443,7 +444,7 @@ if __name__ == "__main__":
                             ),
                         )
                 canvas.save(png)
-
+        # case 2. reconstruction
         elif args.mixing_type == "reconstruction":
             for i, real_img in enumerate(tqdm(loader, mininterval=1)):
                 real_img = real_img.to(device)
