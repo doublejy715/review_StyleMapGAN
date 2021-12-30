@@ -18,7 +18,6 @@ seg_index = {'e':[5,4],
             'n':[10],
             'm':[11,12,13]}
 
-# for 1 gpu only.
 class Model(nn.Module):
     def __init__(self):
         super(Model, self).__init__()
@@ -42,16 +41,13 @@ class Model(nn.Module):
 
     def forward(self, original_image, references, masks, shift_values):
 
-        combined = torch.cat([original_image, references], dim=0) # shape = 2,256,256,3
+        combined = torch.cat([original_image, references], dim=0)
 
-        # original image & reference images 들의 stylemap을 한번에 뽑아낸다.
         ws = self.e_ema(combined)
-        # original / reference stylemap을 분리한다.
-        original_stylemap, reference_stylemaps = torch.split( 
+        original_stylemap, reference_stylemaps = torch.split(
             ws, [1, len(ws) - 1], dim=0
         )
 
-        # mask를 정확히 알아 봐야 함
         mixed = self.g_ema(
             [original_stylemap, reference_stylemaps],
             input_is_stylecode=True,
@@ -114,21 +110,46 @@ def my_morphed_images(
 
 # load image / resize image / get mask of references image / 
 def data_preprocess(args):
+    shift_values = [[0.0,0.0,0.0],[0.0,0.0,0.0]]
+
     original_path = os.path.join(args.original_path,os.listdir(args.original_path)[0])
     references_path = [os.path.join(args.reference_path,os.listdir(args.reference_path)[0])]
 
     original_image = Image.open(original_path).resize((train_args.size, train_args.size))
-    reference_image = [TF.to_tensor(Image.open(references_path[0]).resize((train_args.size, train_args.size)))]
-            
+    reference_images = []
+
+    for ref in references_path:
+        reference_images.append(
+            TF.to_tensor(
+                Image.open(references_path[0]).resize((train_args.size, train_args.size))
+            )
+        )
+
+    # segmentation : get mask img
     os.system(f'cd face_parsing; python test.py --input ../{references_path[0]}')
 
     mask = Image.open(os.path.join(args.seg_path,os.listdir(args.seg_path)[0]))
-    
-    return original_image, reference_image, references_path, mask
+    masks = mask2masks(mask,args.key)
+
+    save_dir = args.save_path
+
+    generated_images = my_morphed_images(
+        original_image,
+        reference_images,
+        references_path, # references_path 안에 하나만 있는 경우 필요한지 확인하기
+        masks,
+        shift_values,
+        interpolation=args.interpolation_step,
+        save_dir=save_dir,
+    )
+
+    for i in range(args.interpolation_step):
+        path = f"{save_dir}/{str(i).zfill(3)}.png"
+        Image.fromarray(generated_images[i]).save(path)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--interpolation_step", type=int, default=3)
+    parser.add_argument("--interpolation_step", type=int, default=1)
     # parser.add_argument("--ckpt", type=str, default='expr/checkpoints/030000.pt')
     parser.add_argument("--ckpt", type=str, default='expr/checkpoints/celeba_hq_8x8_20M_revised.pt')
     parser.add_argument("--save_path", type=str, default='./result/')
@@ -151,21 +172,4 @@ if __name__ == "__main__":
     model.e_ema.load_state_dict(ckpt["e_ema"])
     model.eval()
 
-    original_image, reference_images, references_path, mask = data_preprocess(args)
-
-    shift_values = [[0.0,0.0,0.0],[0.0,0.0,0.0]]
-    masks = mask2masks(mask,args.key)
-
-    generated_images = my_morphed_images(
-        original_image,
-        reference_images,
-        references_path,
-        masks,
-        shift_values,
-        interpolation=args.interpolation_step,
-        save_dir=args.save_path,
-    )
-
-    for i in range(args.interpolation_step):
-        path = f"{args.save_path}/{str(i).zfill(3)}.png"
-        Image.fromarray(generated_images[i]).save(path)
+    data_preprocess(args)
